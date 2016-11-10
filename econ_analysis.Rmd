@@ -1,0 +1,419 @@
+---
+output: 
+  rmarkdown::html_document:
+    theme: flatly
+    highlight: monochrome
+---
+
+
+<h1><big><b> ECONOMIC GROWTH ANALYSIS </b></big></h1>
+
+<h1><b> Background & Info </b></h1>
+
+This code analyzes time series data from the [Federal Reserve Economic Database](https://fred.stlouisfed.org/) (or, FRED), particularly the balance of Federal Debt by quarter. 
+
+We are going to analyze the underlying seasonality, trend, and randomness within the series using structural time series modeling - as well as use explanatory variables to help understand what may be some of the drivers of these factors using standard linear modeling.
+
+Think of this as if it were an actual project you were undertaking. We will walk through each step of the process to (hopefully) help the various topics you have learned come together and help connect the dots.
+
+<h4><b> The Data </b></h4>
+The actual data we are covering is quarterly from 1980, and covers [total Federal debt held according to the Treasury Department](https://www.fiscal.treasury.gov/fsreports/rpt/treasBulletin/current.htm). This quarterly statement is part of a number of Treasury financial reports, which summarizes the activities of the Federal Government and its entities. For more information, you can check out the docs at the previous link.
+
+<h1><b> Goals of Analysis </b></h1>
+
+The goal of this analysis is to get a better foundation of time series analysis, and its applications. Over the course of this term, you have covered basic structural time series analysis as well as basic simulation techniques. Through this project, we will reinforce some of what you have already learned, as well as introduce time series analysis with explanatory variables to help understand what factors may be driving change in our dependent data series (the balance of the Federal budget).
+
+<h4><b> The Steps of Analysis </b></h4>
+
+* Grab our data and load it in
+* Visualize the data to see what we can learn graphically
+* Decompose our time series data
+* Grab explanatory variables
+* Build models against explanatory variables
+* Simulate future values of our explanatory variables
+* Build probabilistic forecasts for our dependent data series
+
+<h2><b> Load Packages & Set Themes </b></h2>
+
+```{r, load packages and set themes, message = FALSE}
+
+# Load packages
+library(ggplot2)
+library(ggthemes)
+library(extrafont)
+library(scales)
+library(rvest)
+library(dplyr)
+library(lubridate)
+library(reshape2)
+library(plotly)
+
+# Set plot theme
+theme_set(
+  theme_bw(base_family = 'Trebuchet MS', base_size = 12) +
+    theme(
+      plot.title = element_text(face = 'bold', hjust = 0),
+      text = element_text(colour = '#4e5c65'),
+      panel.background = element_rect('white'),
+      strip.background = element_rect('#f0f2f3', colour = 'white'),
+      plot.background = element_rect('white'),
+      panel.border = element_rect(colour = 'white'),
+      panel.grid.major.x = element_blank(),
+      panel.grid.major.y = element_blank(),
+      panel.grid.minor.y = element_blank(),
+      legend.background = element_rect('white'),
+      legend.title = element_blank(),
+      legend.position = 'right',
+      legend.direction = 'vertical',
+      legend.key = element_blank(),
+      strip.text = element_text(face = 'bold', size = 10),
+      axis.text = element_text(face = 'bold', size = 9),
+      axis.title = element_blank(),
+      axis.ticks = element_blank()
+    )
+)
+
+```
+
+<h2><b> Load Data & Clean </b></h2>
+
+Before we can do anything, we have to have clean data. This tends to be the most time consuming part of data analysis - finding data, cleaning data, and then merging data. In typical projects, this can be the bulk of the work done. Because of that, knowing tricks to do it quickly can be extremely valuable.
+
+```{r, load data}
+
+# Pull from github repo
+url <- 'https://github.com/ehbick01/data_sets/blob/master/total_debt.csv'
+
+# Read table from url
+federal.balance <- url %>%
+  read_html() %>%
+  html_nodes(xpath = '//*[@id="js-repo-pjax-container"]/div[2]/div[1]/div[3]/div[2]/div[2]/table') %>%
+  html_table()
+
+# Convert list to dataframe
+federal.balance <- do.call('rbind', federal.balance)
+
+# Take a look at the data to see what needs to be cleaned up
+head(federal.balance)
+glimpse(federal.balance)
+
+# Clean the dataframe up a bit
+federal.balance$X1 <- NULL # Remove first column of rownames
+names(federal.balance) <- federal.balance[1, ] # Rename columns
+federal.balance <- federal.balance[-1, ] # Remove first row
+
+# Let's take another look at the data now that we've cleaned it up a bit
+head(federal.balance)
+glimpse(federal.balance)
+
+# Convert 'month' column to date format and 'balance' to numeric
+federal.balance$month <- as.Date(mdy(federal.balance$month))
+federal.balance$balance <- as.numeric(federal.balance$balance)
+head(federal.balance)
+glimpse(federal.balance)
+
+```
+
+<h2><b> Visualize Data Before Decomposing </b></h2>
+
+By visualizing the data, we can sometimes glean insights before doing anything statistical at all. For instance, if we see obvious peaks and valleys in our data then we can assume there is a heavy seasonal component. Also, if we see the series continuously moving higher or lower over time, we can assume there is some type of underlying trend.
+
+```{r, visualize data}
+
+# Plot quarterly balance
+plot <- federal.balance %>%
+  ggplot(aes(x = month, y = balance, group = 1)) +
+    geom_line(colour = '#3672A3') + 
+    scale_y_continuous(labels = comma) + 
+    labs(title = 'Quarterly Balance of Federal Debt', 
+           subtitle = 'Millions of Dollars') 
+ggplotly(plot)
+
+# Plot cumulative balance over time (checking for trend)
+plot <- federal.balance %>% 
+  mutate('cumulative' = cumsum(ifelse(is.na(balance), 0, balance))) %>% 
+  ggplot(aes(x = month, y = cumulative, group = 1)) + 
+    geom_line(colour = '#3672A3') + 
+    scale_y_continuous(labels = comma) + 
+      labs(title = 'Cumulative Balance of Federal Debt', 
+           subtitle = 'Millions of Dollars')
+ggplotly(plot)
+
+# Plot quarterly distributions (checking for seasonality)
+plot <- federal.balance %>%
+  mutate('month.def' = month(federal.balance$month, label = TRUE)) %>%
+  ggplot(aes(x = month.def, y = balance, group = month.def)) + 
+    geom_boxplot(colour = '#3672A3', outlier.colour = '#fd7d47') + 
+    scale_y_continuous(labels = comma) + 
+        labs(title = 'Quarterly Distributions of Federal Debt', 
+           subtitle = 'Millions of Dollars')
+
+ggplotly(plot)
+
+```
+
+<p><b> What We Know So Far </b></p>
+There definitely is some type of underlying upward global trend over time, one that has picked up significantly in the last 15 years. There also doesn't seem to be any obvious seasonal aspect to the data, with each quarter showing very similar distributions.  
+
+The strong upturn in cumulative outlays in the last 15 years appears to be very significant as compared to the 30+ years preceeding it. The trend appears to have let up picked up in recent years, possibly affecting the overall trend in the coming years. By strictly eyeballing the cumulative chart, the trend appears to be exponential over time.
+
+Let's decompose the time series using some of what you have learned in your Time Series course to better examine what trend, seasonal, and random components exist. From that, we can better determine what the global trend is and what (if any) seaonality exists in our data. We can use this to help build out our explanatory model of total Federal debt, and ultimately forecast our values going forward
+
+<h2><b> Decompose the Time Series Structures </b></h2>
+
+```{r, structural decomposition}
+
+# Define seasonal, trend, and remaining structure of the data
+fed.bal.stl <- federal.balance[!is.na(federal.balance$balance), 2] %>%
+  ts(frequency = 4) %>%
+  stl(s.window = 'per')
+  
+# Plot the various structures of the data to visualize each component
+plot <- fed.bal.ts <- fed.bal.stl$time.series %>%
+  data.frame() %>%
+  mutate('month' = federal.balance[!is.na(federal.balance$balance), 1]) %>%
+  melt(id.var = 'month') %>% 
+  ggplot(aes(x = month, y = value, group = variable)) +
+    geom_line(colour = '#3672A3') +
+    facet_wrap(~variable, nrow = 3, scales = 'free') + 
+    scale_y_continuous(labels = comma) + 
+    labs(title = 'Structural Decomposition of Federal Debt',
+         subtitle = 'Millions of Dollars')
+
+ggplotly(plot)
+
+```
+
+Surprisingly, there does seem to be some seasonality here. It goes against what our more general descriptive plots suggest from the quarterly distribution, so let's see what's going on here by stripping out the underlying trend from our series and re-running the descriptive charts from before.
+
+```{r, removing structural trend}
+
+# Pull out the trend component
+fed.bal.trend <- fed.bal.stl$time.series %>%
+  data.frame() %>% 
+  select(trend)
+
+# Adjust the series for its trend
+federal.balance$trend.adj <- federal.balance$balance - fed.bal.trend[,1]
+
+# Plot quarterly balance
+plot <- federal.balance %>%
+  ggplot(aes(x = month, y = trend.adj, group = 1)) +
+    geom_line(colour = '#3672A3') + 
+    scale_y_continuous(labels = comma) + 
+    labs(title = 'Quarterly Balance of Federal Debt, Trend Adjusted', 
+           subtitle = 'Millions of Dollars') 
+ggplotly(plot)
+
+# Plot quarterly distributions (checking for seasonality)
+plot <- federal.balance %>%
+  mutate('month.def' = month(federal.balance$month, label = TRUE)) %>%
+  ggplot(aes(x = month.def, y = trend.adj, group = month.def)) + 
+    geom_boxplot(colour = '#3672A3', outlier.colour = '#fd7d47') + 
+    scale_y_continuous(labels = comma) + 
+        labs(title = 'Quarterly Distributions of Federal Debt, Trend Adjusted', 
+           subtitle = 'Millions of Dollars')
+ggplotly(plot)
+
+# We can also remove the seasonality, leaving just the random structure in our series
+
+# Pull out the seasonal component
+fed.bal.seas <- fed.bal.stl$time.series %>%
+  data.frame() %>% 
+  select(seasonal)
+
+# Adjust the series for its trend
+federal.balance$rand.comp <- federal.balance$balance - fed.bal.trend[,1] - fed.bal.seas[,1]
+
+# Plot quarterly balance
+plot <- federal.balance %>%
+  ggplot(aes(x = month, y = rand.comp, group = 1)) +
+    geom_line(colour = '#3672A3') + 
+    scale_y_continuous(labels = comma) + 
+    labs(title = 'Quarterly Balance of Federal Debt, Random Component', 
+           subtitle = 'Millions of Dollars') 
+ggplotly(plot)
+
+
+```
+
+<p><b> What We Know Now </b></p>
+
+We can now see that, once we control for the trend, there is a seasonal component to Federal debt - with Q1 and Q4 having higher outliers relative to Q2 and Q3. In other words, the strong trend was masking underlying seasonality that exists in our series of Federal debt - which had we now known, we would have mistakenly built our final explanatory model absent any variables reflecting that seasonality.
+
+This is where structural modeling ends and explanatory modeling begins as we now want to understand why we are seeing such a strong upward trend, and what are the drivers to the underlying seasonality once we control for that trend driver. Additionally, there is still a random component at play here - a component that has become much more volatile in the last 10 years.
+
+<h2><b> Building Explanatory Time Series Model </b></h2>
+
+We've now been able to identify the underlying structures of total Federal debt - i.e. trend, seasonality, and randomness/stochasticity - but now we need to dig a little deeper. Most likely, when someone asks you to explain what's happening to a given data series they don't want to know that it has some kind of underlying trend or that the random walk of the data becomes far more volatile in more recent years - that isn't <i>actionable</i> intel.
+
+What business folk want to know is <b>what are the underlying drivers of the data</b> and how are those drivers going to affect the data going forward. In other words, you need to have variables that explain the period-to-period change in your data, as well as some expectation for what those variables are going to do in the future so that you can forecast your data.
+
+This is where explanatory time series models come into play. With these, you can lean on statistical learning techniques to explain what is ultimately driving the trend, seasonality, or randomness in your data instead of just speaking to these general structures. In addition, you can use forecasts of the variables in your model to help forecast your data and create scenarios based on various cuts of the forecasted explanatory variables. In other words, you can create probabilistic forecasts and observe potential risks based on varying expectations.
+
+As a handicap to save time, I'm going to build the explanatory model based on the work done by the [Peter G. Peterson Foundation](http://www.pgpf.org/the-fiscal-and-economic-challenge/drivers) in identifying key drivers of national debt. 
+
+<b>The key drivers they identify are:</b> 
+
+* Number of people age 65+
+  + Because most population estimates are annual and our data series is quarterly, we are going to use [employment figures](https://fred.stlouisfed.org/series/LEU0252891400Q) for 65+
+* Longevity
+  + Since longevity within a year doesn't change and we are already capturing the 65+ population, we are going to avoid pulling this data in just yet
+* Healthcare Costs
+  + We will use [personal consumption expenditures](https://fred.stlouisfed.org/series/DHLCRC1Q027SBEA) for healthcare
+* One measure they don't identify which I'm going to use is the [unemployment rate](https://fred.stlouisfed.org/series/UNRATENSA) to see if it captures some of that more recent volatility.
+
+So, let's go ahead and load these sets in and merge with our series to begin building our models.
+
+<h2><b> Load New Data & Merge Together </b></h2>
+
+```{r, merging new data in}
+
+## Load 65+ Population Data
+
+# Pull from github repo
+url <- 'https://github.com/ehbick01/data_sets/blob/master/population_65plus.csv'
+
+# Read table from url
+pop <- url %>%
+  read_html() %>%
+  html_nodes(xpath = '//*[@id="js-repo-pjax-container"]/div[2]/div[1]/div[3]/div[2]/div[2]/table') %>%
+  html_table()
+
+# Convert list to dataframe
+pop <- do.call('rbind', pop)
+
+# Take a look at the data to see what needs to be cleaned up
+head(pop)
+glimpse(pop)
+
+# Clean the dataframe up a bit
+pop$X1 <- NULL # Remove first column of rownames
+names(pop) <- pop[1, ] # Rename columns
+pop <- pop[-1, ] # Remove first row
+
+# Let's take another look at the data now that we've cleaned it up a bit
+head(pop)
+glimpse(pop)
+
+# Convert 'month' column to date format and 'balance' to numeric
+pop$month <- as.Date(mdy(pop$month))
+pop$pop65 <- as.numeric(pop$pop65)
+head(pop)
+glimpse(pop)
+
+## Load Healthcare Costs
+
+# Pull from github repo
+url <- 'https://github.com/ehbick01/data_sets/blob/master/pce_healthcare.csv'
+
+# Read table from url
+hlth.cost <- url %>%
+  read_html() %>%
+  html_nodes(xpath = '//*[@id="js-repo-pjax-container"]/div[2]/div[1]/div[3]/div[2]/div[2]/table') %>%
+  html_table()
+
+# Convert list to dataframe
+hlth.cost <- do.call('rbind', hlth.cost)
+
+# Take a look at the data to see what needs to be cleaned up
+head(hlth.cost)
+glimpse(hlth.cost)
+
+# Clean the dataframe up a bit
+hlth.cost$X1 <- NULL # Remove first column of rownames
+names(hlth.cost) <- hlth.cost[1, ] # Rename columns
+hlth.cost <- hlth.cost[-1, ] # Remove first row
+
+# Let's take another look at the data now that we've cleaned it up a bit
+head(hlth.cost)
+glimpse(hlth.cost)
+
+# Convert 'month' column to date format and 'balance' to numeric
+hlth.cost$month <- as.Date(mdy(hlth.cost$month))
+hlth.cost$healthexp <- as.numeric(hlth.cost$healthexp)
+head(hlth.cost)
+glimpse(hlth.cost)
+
+## Load Unemployment Rate
+
+# Pull from github repo
+url <- 'https://github.com/ehbick01/data_sets/blob/master/unemployment.csv'
+
+# Read table from url
+unemp <- url %>%
+  read_html() %>%
+  html_nodes(xpath = '//*[@id="js-repo-pjax-container"]/div[2]/div[1]/div[3]/div[2]/div[2]/table') %>%
+  html_table()
+
+# Convert list to dataframe
+unemp <- do.call('rbind', unemp)
+
+# Take a look at the data to see what needs to be cleaned up
+head(unemp)
+glimpse(unemp)
+
+# Clean the dataframe up a bit
+unemp$X1 <- NULL # Remove first column of rownames
+names(unemp) <- unemp[1, ] # Rename columns
+unemp <- unemp[-1, ] # Remove first row
+
+# Let's take another look at the data now that we've cleaned it up a bit
+head(unemp)
+glimpse(unemp)
+
+# Convert 'month' column to date format and 'balance' to numeric
+unemp$month <- as.Date(mdy(unemp$month))
+unemp$unemp <- as.numeric(unemp$unemp)
+head(unemp)
+glimpse(unemp)
+
+## Merge With Total Debt Data
+
+# Creating a new dataframe called 'model.data' here for sake of cleanliness
+# -- First we will merge with the population data, as that has the least number of observations
+# -- After we make that merge, we will bring in healthcare cost and unemployment
+model.data <- merge(merge(federal.balance[, c(1:2)], pop, by = 'month', all.y = TRUE),
+                   merge(hlth.cost, unemp, by = 'month', all.x = TRUE), 
+                   by = 'month', 
+                   all.x = TRUE)
+head(model.data)
+glimpse(model.data)
+
+```
+
+Now that we have all of our data in one place, we can begin to build our model. First, just for the sake of it, we can create a quick descriptive plot for our individual series to see if there are any similarities visually. Meaning, can we eyeball some relationships here before we actually build anything? If so, what are they? This stage helps us to start to think about hypotheses to test in our modeling. 
+
+<h2><b> Build Descriptive Plot of New Data and Old </b></h2>
+
+```{r, plotting new data}
+
+plot <- model.data %>% 
+  melt(id.var = 'month') %>% 
+  ggplot(aes(x = month, y = value, group = variable)) +
+  geom_line(colour = '#3672A3') +
+  scale_y_continuous(labels = comma) + 
+  facet_wrap(~variable, nrow = 4, scales = 'free')
+
+ggplotly(plot)
+
+```
+
+Strictly from glancing at the data, the 65+ population and healthcare expenditures both have an upward trend similar to the overall Federal debt balance. Interestingly, the unemployment rate has some peaks and troughs in it that could potentially explain some of that underlying seasonality that we saw in the trend-adjusted decomposition of our data series.
+
+Looking at this, there's a good chance we can build a decent model of Federal debt against the data we have. <b>However, it is important to caveat that our interpretation of the model is important!</b> Once the model is ran, we'll walk through the results together.
+
+<h2><b> Building Our Model </b></h2>
+
+Now that we have cleaned and merged our data, we simply only have to run the data through the lm function to build our linear model. 
+
+```{r, modeling}
+
+#Build the model
+model <- lm(balance ~ ., 
+            data = model.data[, which(names(model.data) != 'month')])
+
+summary(model)
+
+```
+
